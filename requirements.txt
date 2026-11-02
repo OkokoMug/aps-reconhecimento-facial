@@ -1,0 +1,8 @@
+#Dependências diretas do ambiente validado: CPython 3.11.9, Windows x64.
+#OpenCV com GUI é necessario para a webcam. Não substituir por headless.
+#Pesos buffalo_l e servidor MySQL nao sao instalados por este arquivo.
+insightface==2.1
+onnxruntime==1.30.0
+opencv-python==5.0.0.93
+numpy==2.4.6
+mysql-connector-python==26.7.0
