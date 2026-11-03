@@ -37,6 +37,14 @@ def extrair_embedding_frame(imagem):
             f"Dimensão inesperada: {embedding.shape}"
         )
 
+    if not np.isfinite(embedding).all():
+        raise ValueError("Embedding extraído contém valores não finitos.")
+
+    # Acumulação em float64; tolerância absoluta para arredondamento float32.
+    norma = np.linalg.norm(embedding.astype(np.float64))
+    if not np.isclose(norma, 1.0, rtol=0.0, atol=1e-5):
+        raise ValueError("Embedding extraído não possui norma unitária.")
+
     return embedding
 
 def extrair_embedding(caminho_imagem):

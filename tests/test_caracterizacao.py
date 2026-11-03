@@ -1,4 +1,5 @@
 import importlib.util
+from itertools import permutations
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -85,7 +86,7 @@ class Caracterizacao(unittest.TestCase):
                      (2, self.vetor(.8).tobytes(), 512)]
         usuario, score = self.identificar(registros)
         self.assertEqual(usuario, 1)
-        self.assertEqual(score, float(np.dot(self.vetor(), self.vetor(.9))))
+        self.assertAlmostEqual(score, .9, places=6)
         sql, parametros = self.cursor.execute.call_args.args
         self.assertIn("WHERE ativo = 1", sql)
         self.assertIn("AND modelo = %s", sql)
@@ -108,6 +109,73 @@ class Caracterizacao(unittest.TestCase):
         blob = self.vetor().tobytes()
         self.assertEqual(self.identificar([(8, blob, 512), (2, blob, 512)])[0], 8)
 
+    def test_maximo_por_usuario_independe_da_ordem_das_referencias(self):
+        # Inclui [0.9, 0.2] e [0.2, 0.9], e todas as posições do concorrente.
+        registros = [(1, self.vetor(.9).tobytes(), 512),
+                     (1, self.vetor(.2).tobytes(), 512),
+                     (2, self.vetor(.8).tobytes(), 512)]
+        for ordem in permutations(registros):
+            with self.subTest(ordem=[(r[0], float(np.frombuffer(r[1], dtype=np.float32)[0]))
+                                     for r in ordem]):
+                usuario, score = self.identificar(list(ordem))
+                self.assertEqual(usuario, 1)
+                self.assertAlmostEqual(score, .9, places=6)
+
+    def test_threshold_vizinhos_float32_com_produto_escalar_real(self):
+        centro = np.float32(.30)
+        abaixo = np.nextafter(centro, np.float32(-np.inf))
+        acima = np.nextafter(centro, np.float32(np.inf))
+        self.assertLess(float(abaixo), .30)
+        self.assertGreater(float(centro), .30)
+        for valor, aceito in ((abaixo, False), (centro, True), (acima, True)):
+            with self.subTest(score=float(valor)):
+                resultado = self.identificar([(1, self.vetor(float(valor)).tobytes(), 512)])
+                if aceito:
+                    self.assertEqual(resultado, (1, float(valor)))
+                else:
+                    self.assertIsNone(resultado)
+        # A igualdade matemática é verificada separadamente com dot simulado:
+        # nenhum float32 representa exatamente o número decimal 0.30.
+
+    def test_empate_multiplas_referencias_preserva_primeiro_usuario(self):
+        for primeiro, segundo in ((8, 2), (2, 8)):
+            for scores in ((.9, .2), (.2, .9)):
+                with self.subTest(primeiro=primeiro, scores=scores):
+                    registros = [(primeiro, self.vetor(scores[0]).tobytes(), 512),
+                                 (segundo, self.vetor(.9).tobytes(), 512),
+                                 (primeiro, self.vetor(scores[1]).tobytes(), 512),
+                                 (segundo, self.vetor(.1).tobytes(), 512)]
+                    usuario, score = self.identificar(registros)
+                    self.assertEqual(usuario, primeiro)
+                    self.assertAlmostEqual(score, .9, places=6)
+
+    def exigir_rejeicao_referencia(self, valor):
+        # Fixture tem formato válido, mas conteúdo inválido. Consulta é unitária.
+        # Não usa mock de dot nem adapta o esperado ao comportamento observado.
+        referencia = np.zeros(512, dtype=np.float32)
+        referencia[0] = valor
+        self.assertEqual(referencia.shape, (512,))
+        self.assertEqual(len(referencia.tobytes()), 2048)
+        with np.errstate(invalid="ignore", over="ignore"):
+            resultado = self.identificar([(7, referencia.tobytes(), 512)])
+        self.assertIsNone(resultado, "Referência inválida não pode identificar usuário")
+
+    def test_referencia_nan_deve_ser_rejeitada(self):
+        self.exigir_rejeicao_referencia(np.nan)
+
+    def test_referencia_infinito_positivo_deve_ser_rejeitada(self):
+        self.exigir_rejeicao_referencia(np.inf)
+
+    def test_referencia_infinito_negativo_deve_ser_rejeitada(self):
+        self.exigir_rejeicao_referencia(-np.inf)
+
+    def test_referencia_nula_deve_ser_rejeitada(self):
+        self.exigir_rejeicao_referencia(0.)
+
+    def test_referencia_norma_dois_deve_ser_rejeitada(self):
+        # Norma 2, não um erro de arredondamento de um vetor unitário.
+        self.exigir_rejeicao_referencia(2.)
+
     def test_sem_referencias_ou_apenas_invalidas(self):
         for registros in [[], [(1, b"curto", 512)],
                           [(1, self.vetor().tobytes(), 128)]]:
@@ -118,6 +186,21 @@ class Caracterizacao(unittest.TestCase):
         self.assertEqual(self.identificar([
             (1, b"curto", 512), (2, self.vetor().tobytes(), 512)])[0], 2)
 
+    def test_conteudo_invalido_nao_impede_outras_referencias_validas(self):
+        for valor in (np.nan, np.inf, -np.inf, 0., 2.):
+            for mesmo_usuario in (False, True):
+                for invalida_primeiro in (False, True):
+                    with self.subTest(valor=valor, mesmo_usuario=mesmo_usuario,
+                                      invalida_primeiro=invalida_primeiro):
+                        vetor = np.zeros(512, dtype=np.float32)
+                        vetor[0] = valor
+                        invalida = (2 if mesmo_usuario else 1, vetor.tobytes(), 512)
+                        valida = (2, self.vetor(.8).tobytes(), 512)
+                        registros = [invalida, valida] if invalida_primeiro else [valida, invalida]
+                        usuario, score = self.identificar(registros)
+                        self.assertEqual(usuario, 2)
+                        self.assertAlmostEqual(score, .8, places=6)
+
     def test_exige_exatamente_uma_fonte(self):
         for argumentos in [{}, {"frame": object(), "caminho_imagem": "sintetica"}]:
             with self.subTest(argumentos=list(argumentos)):
@@ -125,11 +208,16 @@ class Caracterizacao(unittest.TestCase):
                     self.identificacao.identificar_usuario(**argumentos)
 
     def test_extracao_converte_float32_sem_renormalizar(self):
-        original = np.arange(512, dtype=np.float64)
+        original = np.zeros(512, dtype=np.float64)
+        original[:2] = (.6, .8)
+        self.assertTrue(np.isfinite(original).all())
+        self.assertAlmostEqual(np.linalg.norm(original), 1.0, places=14)
         self.cadastro.app.get.return_value = [SimpleNamespace(normed_embedding=original)]
         resultado = self.cadastro.extrair_embedding_frame(np.ones((2, 2, 3)))
+        self.assertEqual(resultado.shape, (512,))
         self.assertEqual(resultado.dtype, np.float32)
         np.testing.assert_array_equal(resultado, original.astype(np.float32))
+        self.assertEqual(resultado.tobytes(), original.astype(np.float32).tobytes())
 
     def test_quantidade_faces_e_dimensao(self):
         for faces in [[], [Mock(), Mock()]]:
@@ -239,7 +327,7 @@ class Caracterizacao(unittest.TestCase):
         return conectar
 
     def test_procedure_argumentos_retorno_e_sem_auditoria_duplicada(self):
-        for decisao in ["AUTORIZADO", "NEGADO"]:
+        for decisao in ["PERMITIDO", "NEGADO"]:
             with self.subTest(decisao=decisao):
                 self.conexao.reset_mock()
                 resposta = dict(usuario="Sintetico", area="Teste", resultado=decisao, motivo="teste")
