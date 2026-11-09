@@ -50,9 +50,22 @@ def identificar_usuario(caminho_imagem=None, frame=None):
             dtype=np.float32
         )
 
+        if (embedding_banco.shape != (512,)
+                or not np.isfinite(embedding_banco).all()
+                or not np.isclose(
+                    np.linalg.norm(embedding_banco.astype(np.float64)),
+                    1.0, rtol=0.0, atol=1e-5
+                )):
+            print(f"Biometria inválida para usuário {id_usuario}.")
+            continue
+
         similaridade = float(
             np.dot(embedding_consulta, embedding_banco)
         )
+
+        if not np.isfinite(similaridade):
+            print(f"Biometria inválida para usuário {id_usuario}.")
+            continue
 
         if id_usuario not in similaridades_usuarios:
             similaridades_usuarios[id_usuario] = similaridade

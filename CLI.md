@@ -1,7 +1,6 @@
 # Interface do terminal
 
-Executar a partir da raiz do projeto, com o ambiente virtual e as dependências
-existentes. Caminhos de imagens podem ser absolutos ou relativos ao diretório
+Executar a partir da raiz do projeto, com o ambiente virtual e as dependências existentes. Caminhos de imagens podem ser absolutos ou relativos ao diretório
 atual. Usar aspas para caminhos com espaços.
 
 ```powershell
